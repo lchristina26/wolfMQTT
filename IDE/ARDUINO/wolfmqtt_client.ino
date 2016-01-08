@@ -1,5 +1,7 @@
-#include <Ethernet.h>
+#define WOLFMQTT_USER_IO
+
 #include <wolfMQTT.h>
+#include <Ethernet.h>
 #include <wolfssl.h>
 #include <wolfssl/ssl.h>
 #include <wolfmqtt/mqtt_client.h>
@@ -19,8 +21,13 @@
 
 EthernetClient client;
 
-int EthernetSend(WOLFSSL* ssl, char* msg, int sz, void* ctx);
-int EthernetReceive(WOLFSSL* ssl, char* reply, int sz, void* ctx);
+int EthernetConnect(void *context, const char* host, word16 port, int timeout_ms);
+int EthernetRead(void *context, byte* buf, int buf_len, int timeout_ms);
+int EthernetWrite(void *context, const byte* buf, int buf_len, int timeout_ms);
+int EthernetDisconnect(void *context);
+
+static int mqttclient_message_cb(MqttClient *client, MqttMessage *msg,
+                                 byte msg_new, byte msg_done);
 static int mqttclient_tls_cb(MqttClient* cli);
 static int mqttclient_tls_verify_cb(int preverify, WOLFSSL_X509_STORE_CTX* store);
 
@@ -31,45 +38,51 @@ word16 port            = 0;
 const char* host       = "iot.eclipse.org";
 static int mStopRead   = 0;
 const char* mTlsFile   = NULL;
+MqttNet net;
 
 void setup() {
   Serial.begin(9600);
 
-  method = wolfTLSv1_2_client_method();
-  if (method == NULL) {
-    Serial.println("unable to get method");
-    return;
-  }
-  ctx = wolfSSL_CTX_new(method);
-  if (ctx == NULL) {
-    Serial.println("unable to get ctx");
-    return;
-  }
-  // initialize wolfSSL using callback functions
-  wolfSSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, 0);
-  wolfSSL_SetIOSend(ctx, EthernetSend);
-  wolfSSL_SetIORecv(ctx, EthernetReceive);
+  wolfMQTT_SetIOConnect(&net, EthernetConnect);
+  wolfMQTT_SetIORead(&net, EthernetRead);
+  wolfMQTT_SetIOWrite(&net, EthernetWrite);
+  wolfMQTT_SetIODisconnect(&net, EthernetDisconnect);
 
   return;
 }
 
-int EthernetSend(WOLFSSL* ssl, char* msg, int sz, void* ctx) {
-  int sent = 0;
+int EthernetConnect(void *context, const char* host, word16 port, int timeout_ms) {
+  int ret = 0;
 
-  sent = client.write((byte*)msg, sz);
+  ret = client.connect((byte*)host, port);
 
-  return sent;
+  return ret;
 }
 
-int EthernetReceive(WOLFSSL* ssl, char* reply, int sz, void* ctx) {
+int EthernetRead(void *context, byte* buf, int buf_len, int timeout_ms) {
   int recvd = 0;
 
-  while (client.available() > 0) { // && recvd < sz) {
-    reply[recvd] = client.read();
+  while (client.available() > 0) {
+    Serial.println("Trying to read");
+    buf[recvd] = client.read();
     recvd++;
   }
 
   return recvd;
+}
+
+int EthernetWrite(void *context, const byte* buf, int buf_len, int timeout_ms) {
+  int sent = 0;
+
+  sent = client.write(buf, buf_len);
+
+  return sent;
+}
+
+int EthernetDisconnect(void *context) {
+  client.stop();
+
+  return 0;
 }
 
 static int mqttclient_tls_verify_cb(int preverify, WOLFSSL_X509_STORE_CTX* store)
@@ -107,7 +120,7 @@ static int mqttclient_tls_cb(MqttClient* cli)
   return rc;
 }
 
-#define MAX_PACKET_ID   ((1 << 16) - 1)                                         
+#define MAX_PACKET_ID   ((1 << 16) - 1)
 static int mPacketIdLast;
 static word16 mqttclient_get_packetid(void)
 {
@@ -116,10 +129,54 @@ static word16 mqttclient_get_packetid(void)
   return (word16)mPacketIdLast;
 }
 
+#define PRINT_BUFFER_SIZE    80
+static int mqttclient_message_cb(MqttClient *client, MqttMessage *msg,
+                                 byte msg_new, byte msg_done)
+{
+  byte buf[PRINT_BUFFER_SIZE + 1];
+  word32 len;
+
+  (void)client; /* Supress un-used argument */
+
+  if (msg_new) {
+    /* Determine min size to dump */
+    len = msg->topic_name_len;
+    if (len > PRINT_BUFFER_SIZE) {
+      len = PRINT_BUFFER_SIZE;
+    }
+    XMEMCPY(buf, msg->topic_name, len);
+    buf[len] = '\0'; /* Make sure its null terminated */
+
+    /* Print incoming message */
+    Serial.print("MQTT Message: Topic ");
+    Serial.println((char*)buf);
+    Serial.print("Qos ");
+    Serial.println(msg->qos);
+    Serial.print("Len ");
+    Serial.println(msg->total_len);
+  }
+
+  /* Print message payload */
+  len = msg->buffer_len;
+  if (len > PRINT_BUFFER_SIZE) {
+    len = PRINT_BUFFER_SIZE;
+  }
+  XMEMCPY(buf, msg->buffer, len);
+  buf[len] = '\0'; /* Make sure its null terminated */
+  Serial.print("Payload: ");
+  Serial.println((char*)buf);
+
+  if (msg_done) {
+    Serial.println("MQTT Message: Done");
+  }
+
+  /* Return negative to terminate publish processing */
+  return MQTT_CODE_SUCCESS;
+}
+
 void loop() {
   int rc;
   MqttClient cli;
-  MqttNet net;
   int use_tls = 0;
   MqttQoS qos = DEFAULT_MQTT_QOS;
   byte clean_session = 1;
@@ -144,11 +201,11 @@ void loop() {
                              5000, use_tls, mqttclient_tls_cb);
   if (!rc) {
     Serial.println("Could not connect");
-    return; 
+    return;
   }
   Serial.println("Got past connect");
 
-  rc = MqttClient_Init(&cli, &net, msg_cb, tx_buf, MAX_BUFFER_SIZE,
+  rc = MqttClient_Init(&cli, &net, mqttclient_message_cb, tx_buf, MAX_BUFFER_SIZE,
                        rx_buf, MAX_BUFFER_SIZE, DEFAULT_CMD_TIMEOUT_MS);
   Serial.print("MQTT Init: ");
   Serial.print(MqttClient_ReturnCodeToString(rc));
