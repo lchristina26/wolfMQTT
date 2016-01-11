@@ -1,5 +1,3 @@
-#define WOLFMQTT_USER_IO
-
 #include <wolfMQTT.h>
 #include <Ethernet.h>
 #include <wolfssl.h>
@@ -8,79 +6,67 @@
 #include <examples/mqttnet.h>
 
 /* Configuration */
-#define DEFAULT_CMD_TIMEOUT_MS  1000
+#define DEFAULT_CMD_TIMEOUT_MS  30000
 #define DEFAULT_CON_TIMEOUT_MS  5000
 #define DEFAULT_MQTT_QOS        MQTT_QOS_0
 #define DEFAULT_KEEP_ALIVE_SEC  60
 #define DEFAULT_CLIENT_ID       "WolfMQTTClient"
 #define WOLFMQTT_TOPIC_NAME     "wolfMQTT/example/"
+#define DEFAULT_TOPIC_NAME      WOLFMQTT_TOPIC_NAME"testTopic"
 
 #define MAX_BUFFER_SIZE         1024
 #define TEST_MESSAGE            "test"
 #define TEST_TOPIC_COUNT        2
 
-EthernetClient client;
+/* Local Variables */
+static WOLFSSL_METHOD* mMethod = 0;
+static WOLFSSL_CTX* mCtx       = 0;
+static WOLFSSL* mSsl           = 0;
+static word16 mPort            = 0;
+static const char* mHost       = "iot.eclipse.org";
+static static int mStopRead    = 0;
+static const char* mTlsFile    = NULL;
 
-int EthernetConnect(void *context, const char* host, word16 port, int timeout_ms);
-int EthernetRead(void *context, byte* buf, int buf_len, int timeout_ms);
-int EthernetWrite(void *context, const byte* buf, int buf_len, int timeout_ms);
-int EthernetDisconnect(void *context);
-
-static int mqttclient_message_cb(MqttClient *client, MqttMessage *msg,
-                                 byte msg_new, byte msg_done);
-static int mqttclient_tls_cb(MqttClient* cli);
-static int mqttclient_tls_verify_cb(int preverify, WOLFSSL_X509_STORE_CTX* store);
-
-WOLFSSL_METHOD* method = 0;
-WOLFSSL_CTX* ctx       = 0;
-WOLFSSL* ssl           = 0;
-word16 port            = 0;
-const char* host       = "iot.eclipse.org";
-static int mStopRead   = 0;
-const char* mTlsFile   = NULL;
-MqttNet net;
-
-void setup() {
-  Serial.begin(9600);
-
-  wolfMQTT_SetIOConnect(&net, EthernetConnect);
-  wolfMQTT_SetIORead(&net, EthernetRead);
-  wolfMQTT_SetIOWrite(&net, EthernetWrite);
-  wolfMQTT_SetIODisconnect(&net, EthernetDisconnect);
-
-  return;
-}
-
-int EthernetConnect(void *context, const char* host, word16 port, int timeout_ms) {
+/* Private functions */
+static int EthernetConnect(void *context, const char* host, word16 port, int timeout_ms) 
+{
   int ret = 0;
+  EthernetClient* ethClient = (EthernetClient*)context;
 
-  ret = client.connect((byte*)host, port);
+  ret = ethClient->connect((byte*)host, port);
 
   return ret;
 }
 
-int EthernetRead(void *context, byte* buf, int buf_len, int timeout_ms) {
+static int EthernetRead(void *context, byte* buf, int buf_len, int timeout_ms) 
+{
   int recvd = 0;
+  EthernetClient* ethClient = (EthernetClient*)context;
 
-  while (client.available() > 0) {
+  /* While data and buffer available */
+  while (ethClient->available() > 0 && recvd < buf_len) {
     Serial.println("Trying to read");
-    buf[recvd] = client.read();
+    buf[recvd] = ethClient->read();
     recvd++;
   }
 
   return recvd;
 }
 
-int EthernetWrite(void *context, const byte* buf, int buf_len, int timeout_ms) {
+static int EthernetWrite(void *context, const byte* buf, int buf_len, int timeout_ms) 
+{
   int sent = 0;
+  EthernetClient* ethClient = (EthernetClient*)context;
 
-  sent = client.write(buf, buf_len);
+  sent = ethClient->write(buf, buf_len);
 
   return sent;
 }
 
-int EthernetDisconnect(void *context) {
-  client.stop();
+static int EthernetDisconnect(void *context) 
+{
+  EthernetClient* ethClient = (EthernetClient*)context;
+  ethClient->stop();
 
   return 0;
 }
@@ -174,9 +160,18 @@ static int mqttclient_message_cb(MqttClient *client, MqttMessage *msg,
   return MQTT_CODE_SUCCESS;
 }
 
+/* Public Functions */
+void setup() {
+  Serial.begin(9600);
+
+  return;
+}
+
 void loop() {
   int rc;
-  MqttClient cli;
+  MqttClient client;
+  EthernetClient ethClient;
+  MqttNet net;
   int use_tls = 0;
   MqttQoS qos = DEFAULT_MQTT_QOS;
   byte clean_session = 1;
@@ -191,29 +186,24 @@ void loop() {
 
   Serial.print("MQTT Client: QoS ");
   Serial.println(qos);
-  rc = MqttClientNet_Init(&net);
-  Serial.print("MQTT Net Init: ");
-  Serial.print(MqttClient_ReturnCodeToString(rc));
-  Serial.print(" ");
-  Serial.println(rc);
+  
+  /* Setup network callbacks */
+  net.connect = EthernetConnect;
+  net.read = EthernetRead;
+  net.write = EthernetWrite;
+  net.disconnect = EthernetDisconnect;
+  net.context = &ethClient;
 
-  rc = MqttClient_NetConnect(&cli, host, port,
-                             5000, use_tls, mqttclient_tls_cb);
-  if (!rc) {
-    Serial.println("Could not connect");
-    return;
-  }
-  Serial.println("Got past connect");
-
-  rc = MqttClient_Init(&cli, &net, mqttclient_message_cb, tx_buf, MAX_BUFFER_SIZE,
+  /* Init Mqtt Client */
+  rc = MqttClient_Init(&client, &net, mqttclient_message_cb, tx_buf, MAX_BUFFER_SIZE,
                        rx_buf, MAX_BUFFER_SIZE, DEFAULT_CMD_TIMEOUT_MS);
   Serial.print("MQTT Init: ");
   Serial.print(MqttClient_ReturnCodeToString(rc));
   Serial.print(" ");
   Serial.println(rc);
 
-  /* Connect to broker */
-  rc = MqttClient_NetConnect(&cli, host, port,
+  /* Connect to broker server socket */
+  rc = MqttClient_NetConnect(&client, mHost, mPort,
                              DEFAULT_CON_TIMEOUT_MS, use_tls, mqttclient_tls_cb);
   Serial.print("MQTT Socket Connect: ");
   Serial.print(MqttClient_ReturnCodeToString(rc));
@@ -246,21 +236,19 @@ void loop() {
     connect.password = password;
 
     /* Send Connect and wait for Connect Ack */
-    rc = MqttClient_Connect(&cli, &connect);
+    rc = MqttClient_Connect(&client, &connect);
     printf("MQTT Connect: %s (%d)\n",
            MqttClient_ReturnCodeToString(rc), rc);
     if (rc == MQTT_CODE_SUCCESS) {
       MqttSubscribe subscribe;
       MqttUnsubscribe unsubscribe;
-      MqttTopic topics[TEST_TOPIC_COUNT], *topic;
+      MqttTopic topics[1], *topic;
       MqttPublish publish;
       int i;
 
       /* Build list of topics */
-      topics[0].topic_filter = WOLFMQTT_TOPIC_NAME"subtopic1";
+      topics[0].topic_filter = DEFAULT_TOPIC_NAME;
       topics[0].qos = qos;
-      topics[1].topic_filter = WOLFMQTT_TOPIC_NAME"subtopic2";
-      topics[1].qos = qos;
 
       /* Validate Connect Ack info */
       Serial.print("MQTT Connect Ack: Return Code ");
@@ -268,19 +256,12 @@ void loop() {
       Serial.print(", Session Present ");
       Serial.println((connect.ack.flags & MQTT_CONNECT_ACK_FLAG_SESSION_PRESENT) ? 1 : 0);
 
-      /* Send Ping */
-      rc = MqttClient_Ping(&cli);
-      Serial.print("MQTT Ping: ");
-      Serial.print(MqttClient_ReturnCodeToString(rc));
-      Serial.print(" ");
-      Serial.println(rc);
-
       /* Subscribe Topic */
       memset(&subscribe, 0, sizeof(MqttSubscribe));
       subscribe.packet_id = mqttclient_get_packetid();
-      subscribe.topic_count = TEST_TOPIC_COUNT;
+      subscribe.topic_count = sizeof(topics)/sizeof(MqttTopic);
       subscribe.topics = topics;
-      rc = MqttClient_Subscribe(&cli, &subscribe);
+      rc = MqttClient_Subscribe(&client, &subscribe);
       Serial.print("MQTT Subscribe: ");
       Serial.print(MqttClient_ReturnCodeToString(rc));
       Serial.print(" ");
@@ -300,11 +281,11 @@ void loop() {
       publish.retain = 0;
       publish.qos = qos;
       publish.duplicate = 0;
-      publish.topic_name = WOLFMQTT_TOPIC_NAME"pubtopic";
+      publish.topic_name = DEFAULT_TOPIC_NAME;
       publish.packet_id = mqttclient_get_packetid();
       publish.buffer = (byte*)TEST_MESSAGE;
       publish.total_len = (word16)strlen(TEST_MESSAGE);
-      rc = MqttClient_Publish(&cli, &publish);
+      rc = MqttClient_Publish(&client, &publish);
       Serial.print("MQTT Publish: Topic ");
       Serial.print(publish.topic_name);
       Serial.print(", ");
@@ -316,7 +297,7 @@ void loop() {
       Serial.println("MQTT Waiting for message...");
       while (mStopRead == 0) {
         /* Try and read packet */
-        rc = MqttClient_WaitMessage(&cli, DEFAULT_CMD_TIMEOUT_MS);
+        rc = MqttClient_WaitMessage(&client, DEFAULT_CMD_TIMEOUT_MS);
         Serial.print("..");
         if (rc != MQTT_CODE_SUCCESS && rc != MQTT_CODE_ERROR_TIMEOUT) {
           /* There was an error */
@@ -326,28 +307,38 @@ void loop() {
           Serial.println(rc);
           break;
         }
+
+        /* Keep Alive */
+        rc = MqttClient_Ping(&client);
+        if (rc != MQTT_CODE_SUCCESS) {
+            Serial.print("MQTT Ping: ");
+            Serial.print(MqttClient_ReturnCodeToString(rc));
+            Serial.print(" ");
+            Serial.println(rc);
+            break;
+        }
       }
 
       /* Unsubscribe Topics */
       memset(&unsubscribe, 0, sizeof(MqttUnsubscribe));
       unsubscribe.packet_id = mqttclient_get_packetid();
-      unsubscribe.topic_count = TEST_TOPIC_COUNT;
+      unsubscribe.topic_count = sizeof(topics)/sizeof(MqttTopic);
       unsubscribe.topics = topics;
-      rc = MqttClient_Unsubscribe(&cli, &unsubscribe);
+      rc = MqttClient_Unsubscribe(&client, &unsubscribe);
       Serial.print("MQTT Unsubscribe: ");
       Serial.print(MqttClient_ReturnCodeToString(rc));
       Serial.print(" ");
       Serial.println(rc);
 
       /* Disconnect */
-      rc = MqttClient_Disconnect(&cli);
+      rc = MqttClient_Disconnect(&client);
       Serial.print("MQTT Disconnect: ");
       Serial.print(MqttClient_ReturnCodeToString(rc));
       Serial.print(" ");
       Serial.println(rc);
     }
 
-    rc = MqttClient_NetDisconnect(&cli);
+    rc = MqttClient_NetDisconnect(&client);
     Serial.print("MQTT Socket Disconnect: ");
     Serial.print(MqttClient_ReturnCodeToString(rc));
     Serial.print(" ");

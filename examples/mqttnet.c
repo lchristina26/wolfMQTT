@@ -355,12 +355,10 @@ int MqttClientNet_Init(MqttNet* net)
 
     if (net) {
         XMEMSET(net, 0, sizeof(MqttNet));
-        #ifndef WOLFMQTT_USER_IO
-            net->connect = NetConnect;
-            net->read = NetRead;
-            net->write = NetWrite;
-            net->disconnect = NetDisconnect;
-        #endif
+        net->connect = NetConnect;
+        net->read = NetRead;
+        net->write = NetWrite;
+        net->disconnect = NetDisconnect;
         net->context = WOLFMQTT_MALLOC(sizeof(SocketContext));
     }
     return 0;

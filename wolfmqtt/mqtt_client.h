@@ -61,19 +61,6 @@ struct _MqttClient;
 typedef int (*MqttMsgCb)(struct _MqttClient *client, MqttMessage *message,
     byte msg_new, byte msg_done);
 
-/* I/O Callbacks */
-typedef int (*CallbackIOConnect)(void *context, const char* host, word16 port,
-    int timeout_ms);
-
-typedef int (*CallbackIORead)(void *context, byte* buf, int buf_len,
-    int timeout_ms);
-
-typedef int (*CallbackIOWrite)(void *context, const byte* buf, int buf_len,
-    int timeout_ms);
-
-typedef int (*CallbackIODisconnect)(void *context);
-
-
 /* Client flags */
 enum MqttClientFlags {
     MQTT_CLIENT_FLAG_IS_CONNECTED = 0x01,
@@ -249,12 +236,6 @@ WOLFMQTT_API int MqttClient_NetDisconnect(
  */
 WOLFMQTT_API const char* MqttClient_ReturnCodeToString(
     int return_code);
-
-/* Set callback functions for connect, read, write, disconnect */
-WOLFMQTT_API void wolfMQTT_SetIOConnect(MqttNet*, CallbackIOConnect);
-WOLFMQTT_API void wolfMQTT_SetIORead(MqttNet*, CallbackIORead);
-WOLFMQTT_API void wolfMQTT_SetIOWrite(MqttNet*, CallbackIOWrite);
-WOLFMQTT_API void wolfMQTT_SetIODisconnect(MqttNet*, CallbackIODisconnect);
 
 
 #ifdef __cplusplus
