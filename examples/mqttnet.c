@@ -47,6 +47,10 @@
     #include "lwip/sockets.h"
     #include "lwip/netdb.h"
 
+/* Arduino */
+#elif defined(ARDUINO)
+    #include <Ethernet.h>
+
 /* Windows */
 #elif defined(USE_WINDOWS_API)
     #include <winsock2.h>
@@ -89,13 +93,56 @@
 
 /* Local context for Net callbacks */
 typedef struct _SocketContext {
+#if defined(ARDUINO)
+    EthernetClient ethClient;
+#else
     SOCKET_T fd;
+#endif /* ARDUINO */
 #ifdef ENABLE_STDIN_CAPTURE
     int stdin_has_data;
 #endif
 } SocketContext;
 
 /* Private functions */
+#if defined(ARDUINO)
+static int NetConnect(void *context, const char* host, word16 port, int timeout_ms) 
+{
+    int ret = 0;
+    SocketContext *sock = (SocketContext*)context;
+    ret = sock->ethClient.connect((byte*)host, port);
+    return ret;
+}
+
+static int NetRead(void *context, byte* buf, int buf_len, int timeout_ms) 
+{
+    int recvd = 0;
+    SocketContext *sock = (SocketContext*)context;
+
+    /* While data and buffer available */
+    while (sock->ethClient.available() > 0 && recvd < buf_len) {
+        buf[recvd] = sock->ethClient.read();
+        recvd++;
+    }
+    return recvd;
+}
+
+static int NetWrite(void *context, const byte* buf, int buf_len, int timeout_ms) 
+{
+    int sent = 0;
+    SocketContext *sock = (SocketContext*)context;
+    sent = sock->ethClient.write(buf, buf_len);
+    return sent;
+}
+
+static int NetDisconnect(void *context) 
+{
+    SocketContext *sock = (SocketContext*)context;
+    sock->ethClient.stop();
+    return 0;
+}
+
+/* Linux / Windows / FreeRTOS */
+#else
 static void setup_timeout(struct timeval* tv, int timeout_ms)
 {
     tv->tv_sec = timeout_ms / 1000;
@@ -344,6 +391,7 @@ static int NetDisconnect(void *context)
 
     return 0;
 }
+#endif /* defined(ARDUINO) */
 
 /* Public Functions */
 int MqttClientNet_Init(MqttNet* net)
